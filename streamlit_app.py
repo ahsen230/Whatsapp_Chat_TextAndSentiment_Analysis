@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import re
 from collections import Counter
-from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import emoji
 
@@ -44,6 +43,7 @@ def total_messages_by_person(df):
     messages_by_sender.plot(kind='barh', color='skyblue', title='Total Messages Sent by Each Person')
     plt.xlabel('Number of Messages')
     plt.ylabel('Sender')
+    plt.gca().invert_yaxis()
     st.pyplot(plt)
 
 def total_messages_per_hour(df, filtered_senders):
@@ -71,32 +71,25 @@ def messages_by_day_of_week(df, filtered_senders):
     plt.xlabel('Day of Week')
     plt.ylabel('Number of Messages')
     st.pyplot(plt)
-
 def most_used_words(df, filtered_senders):
-    """Show most used words per person."""
+    """Show most used words per person as a horizontal bar plot."""
     df_filtered = df[df['Sender'].isin(filtered_senders)]
     all_messages = " ".join(df_filtered["Message"].dropna().str.lower())
     words = re.findall(r'\b\w+\b', all_messages)  # Extract words
     common_words = Counter(words).most_common(10)
 
-    st.write("**Most Used Words:**")
-    for word, count in common_words:
-        st.write(f"{word}: {count}")
+    # Convert to DataFrame for plotting
+    words_df = pd.DataFrame(common_words, columns=["Word", "Count"])
 
-def emoji_count_distribution(df, filtered_senders):
-    """Show top 5 emoji count distribution against each person."""
-    df_filtered = df[df['Sender'].isin(filtered_senders)]
-    emoji_counter = Counter()
-
-    for message in df_filtered["Message"]:
-        emoji_counter.update(c for c in message if c in emoji.UNICODE_EMOJI["en"])
-
-    most_common_emojis = emoji_counter.most_common(5)
-    emoji_df = pd.DataFrame(most_common_emojis, columns=["Emoji", "Count"])
-
-    st.write("**Top 5 Emojis and Their Counts:**")
-    st.bar_chart(emoji_df.set_index("Emoji"))
-
+    # Plot the horizontal bar chart
+    plt.figure(figsize=(10, 5))
+    words_df.set_index("Word")["Count"].sort_values(ascending=False).plot(
+        kind='barh', color='orange', title='Top 10 Most Used Words'
+    )
+    plt.xlabel('Frequency')
+    plt.ylabel('Words')
+    plt.gca().invert_yaxis()  # Invert y-axis to show the most frequent word at the top
+    st.pyplot(plt)
 def main():
     st.title("WhatsApp Chat Text Analytics")
     st.divider()
@@ -141,8 +134,7 @@ def main():
         st.subheader("Most Used Words")
         most_used_words(df, selected_senders)
 
-        st.subheader("Emoji Count Distribution")
-        emoji_count_distribution(df, selected_senders)
+
 
 if __name__ == "__main__":
     main()
