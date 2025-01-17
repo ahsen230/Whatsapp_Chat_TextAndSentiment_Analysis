@@ -6,6 +6,10 @@ import matplotlib.pyplot as plt
 import emoji
 import random
 import seaborn as sns
+from transformers import pipeline
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+import torch.nn.functional as F
+import numpy as np
 
 def process_chat(chat_text):
     """Process WhatsApp chat text into a structured DataFrame."""
@@ -248,76 +252,140 @@ def main():
         all_senders = df["Sender"].unique()
         selected_senders = st.sidebar.multiselect("Select Senders:", options=all_senders, default=all_senders)
 
-        # Dashboard Layout
 
 
+        # Add tabs to organize the content
+        tab1, tab2, tab3 = st.tabs(["Chat Preview", "Text Analysis", "Sentiment Analysis"])
 
-    # Add tabs to organize the content
-    tab1, tab2, tab3 = st.tabs(["Chat Preview", "Text Analysis", "Sentiment Analysis"])
+        # Tab 1: Chat Preview
+        with tab1:
+            st.subheader("Chat Preview")
+            if uploaded_file:
+                # Show the first 300 characters of the uploaded chat
+                st.text(chat_text[:300])  # Display top 300 characters from the chat
 
-    # Tab 1: Chat Preview
-    with tab1:
-        st.subheader("Chat Preview")
-        # Show the first 300 characters of the uploaded chat
-        st.text(chat_text[:300])  # Display top 300 characters from the chat
+                # Show the processed DataFrame
+                st.write("Processed Chat DataFrame:")
+                st.write(df)
+            else:
+                st.warning("Please upload a chat file to preview the content.")
 
-        # Show the processed DataFrame
-        st.write("Processed Chat DataFrame:")
-        st.write(df)
+        # Tab 2: Text Analysis
+        with tab2:
+            st.subheader("Text Analysis")
+            # Show metrics
+            total_messages, unique_users, messages_per_user, most_active_user, most_active_user_count, streak_days = calculate_metrics(df)
 
-    # Tab 2: Text Analysis
-    with tab2:
-        st.subheader("Text Analysis")
-        # Show metrics
-        total_messages, unique_users, messages_per_user, most_active_user, most_active_user_count, streak_days = calculate_metrics(df)
+            # Metrics row
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Messages", total_messages ,border=True)
+                st.metric("Unique Users", unique_users ,border=True)
+            with col2:
+                st.metric("Messages Per User", messages_per_user ,border=True)
+                st.metric("Longest Streak (Days)", streak_days ,border=True)
+            with col3:
+                st.metric("Most Active User", most_active_user ,border=True)
+                #st.metric(f"Messages by {most_active_user}", most_active_user_count)
 
-        # Metrics row
-        col1, col2, col3 = st.columns(3)
+            # Dashboard Layout
+
+            # Row 1: Total Messages per Day and Total Messages by Person
+            st.subheader("Message Trends")
+            col4, col5 = st.columns(2)
+            with col4:
+                st.subheader("Total Messages Sent Each Day")
+                total_messages_per_day(df, selected_senders)
+            with col5:
+                st.subheader("Total Messages Sent by Each Person")
+                total_messages_by_person(df, selected_senders)
+
+            # Row 2: Total Messages per Hour and Messages by Day of the Week
+            st.subheader("Time-Based Message Trends")
+            col6, col7 = st.columns(2)
+            with col6:
+                st.subheader("Total Messages Per Hour")
+                total_messages_per_hour(df, selected_senders)
+            with col7:
+                st.subheader("Messages Sent by Each Day of the Week")
+                messages_by_day_of_week(df, selected_senders)
+
+            # Row 3: Top Words Distribution
+            st.subheader("Word Usage Analysis")
+            st.subheader("Top 5 Most Used Words Distribution per Person")
+            top_words_distribution(df, selected_senders)
+
+            # Word Usage Visual (with independent search)
+            st.subheader("Word Usage with Search Filter")
+            word_usage_visual(df)
+
+        # Tab 3: Sentiment Analysis
+        with tab3:
+            st.subheader("Sentiment Analysis")
+
+            if df.empty:
+                st.warning("Please upload a chat file to perform sentiment analysis.")
+            else:
+                # Install and import required libraries
+                from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+
+                # Model name for Twitter RoBERTa sentiment analysis
+                model_name = "cardiffnlp/twitter-roberta-base-sentiment"
+                tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+                # Load the model with 8-bit quantization (reduces memory usage)
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    model_name # Load model in 8-bit precision to save memory
+                )
+
+                # Initialize the sentiment analysis pipeline
+                classifier = pipeline("sentiment-analysis", model=model, tokenizer=tokenizer)
+
+                # Perform sentiment analysis for each message
+                st.info("Analyzing sentiments... This may take a few moments.")
+                sentiments = []
+
+        for message in df["Message"]:
+            if isinstance(message, str):
+                # Tokenize the message with truncation to fit within the model's max length
+                inputs = tokenizer(message, return_tensors="pt", truncation=True, padding=True, max_length=512)
+
+                # Get sentiment prediction using the model's outputs
+                outputs = model(**inputs)
+                scores = F.softmax(outputs.logits, dim=1).detach().numpy()[0]  # Convert logits to probabilities
+                sentiment = np.argmax(scores)  # Get sentiment class index (0 = Negative, 1 = Neutral, 2 = Positive)
+                sentiments.append(["Negative", "Neutral", "Positive"][sentiment])
+            else:
+                sentiments.append("Neutral")
+
+        # Add sentiment results to the DataFrame
+        df["Sentiment"] = sentiments
+
+        # Show sentiment distribution
+        st.subheader("Sentiment Distribution")
+        sentiment_counts = df["Sentiment"].value_counts()
+        st.bar_chart(sentiment_counts)
+
+        # Sentiment distribution per user
+        st.subheader("Sentiment Distribution Per User")
+        sentiment_user = df.groupby(["Sender", "Sentiment"]).size().unstack(fill_value=0)
+        st.write(sentiment_user)
+
+        # Most positive and most negative users
+        st.subheader("Most Positive and Negative Users")
+        positive_counts = df[df["Sentiment"] == "Positive"]["Sender"].value_counts()
+        negative_counts = df[df["Sentiment"] == "Negative"]["Sender"].value_counts()
+        most_positive_user = positive_counts.idxmax() if not positive_counts.empty else "No Data"
+        most_negative_user = negative_counts.idxmax() if not negative_counts.empty else "No Data"
+
+        col1, col2 = st.columns(2)
         with col1:
-            st.metric("Total Messages", total_messages ,border=True)
-            st.metric("Unique Users", unique_users ,border=True)
+            st.metric("Most Positive User", most_positive_user)
         with col2:
-            st.metric("Messages Per User", messages_per_user ,border=True)
-            st.metric("Longest Streak (Days)", streak_days ,border=True)
-        with col3:
-            st.metric("Most Active User", most_active_user ,border=True)
-            #st.metric(f"Messages by {most_active_user}", most_active_user_count)
+            st.metric("Most Negative User", most_negative_user)
 
-        # Dashboard Layout
-
-        # Row 1: Total Messages per Day and Total Messages by Person
-        st.subheader("Message Trends")
-        col4, col5 = st.columns(2)
-        with col4:
-            st.subheader("Total Messages Sent Each Day")
-            total_messages_per_day(df, selected_senders)
-        with col5:
-            st.subheader("Total Messages Sent by Each Person")
-            total_messages_by_person(df, selected_senders)
-
-        # Row 2: Total Messages per Hour and Messages by Day of the Week
-        st.subheader("Time-Based Message Trends")
-        col6, col7 = st.columns(2)
-        with col6:
-            st.subheader("Total Messages Per Hour")
-            total_messages_per_hour(df, selected_senders)
-        with col7:
-            st.subheader("Messages Sent by Each Day of the Week")
-            messages_by_day_of_week(df, selected_senders)
-
-        # Row 3: Top Words Distribution
-        st.subheader("Word Usage Analysis")
-        st.subheader("Top 5 Most Used Words Distribution per Person")
-        top_words_distribution(df, selected_senders)
-
-        # Word Usage Visual (with independent search)
-        st.subheader("Word Usage with Search Filter")
-        word_usage_visual(df)
-
-    # Tab 3: Sentiment Analysis
-    with tab3:
-        st.subheader("Sentiment Analysis")
-        st.write("Sentiment analysis will go here.")
-
+        # Optionally display the DataFrame with sentiment
+        st.subheader("Chat Messages with Sentiment")
+        st.write(df[["Timestamp", "Sender", "Message", "Sentiment"]])
 if __name__ == "__main__":
     main()

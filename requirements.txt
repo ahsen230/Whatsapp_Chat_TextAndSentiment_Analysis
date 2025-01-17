@@ -3,3 +3,8 @@ matplotlib
 pandas
 emoji
 seaborn
+transformers
+tensorflow
+bitsandbytes
+torch
+accelerate
