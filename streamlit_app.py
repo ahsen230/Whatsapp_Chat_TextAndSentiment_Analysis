@@ -75,7 +75,7 @@ def total_messages_per_day(df, filtered_senders):
     df_filtered = df[df['Sender'].isin(filtered_senders)]
     messages_per_day = df_filtered.groupby(df_filtered["Timestamp"].dt.date).size()
 
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(10, 6))
     messages_per_day.plot(kind='line', title='Total Messages Sent Each Day')
     plt.xlabel('Date')
     plt.ylabel('Number of Messages')
@@ -88,7 +88,7 @@ def total_messages_by_person(df, filtered_senders):
     df_filtered = df[df['Sender'].isin(filtered_senders)]
     messages_by_sender = df_filtered['Sender'].value_counts()
 
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(10, 7))
     messages_by_sender.plot(kind='barh', color='skyblue', title='Total Messages Sent by Each Person')
     plt.xlabel('Number of Messages')
     plt.ylabel('Sender')
@@ -100,7 +100,7 @@ def total_messages_per_hour(df, filtered_senders):
     df_filtered = df[df['Sender'].isin(filtered_senders)]
     messages_per_hour = df_filtered.groupby(df_filtered["Timestamp"].dt.hour).size()
 
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(10, 7))
     messages_per_hour.plot(kind='bar', color='orange', title='Total Messages Sent by Each Hour')
     plt.xlabel('Hour')
     plt.ylabel('Number of Messages')
@@ -115,7 +115,7 @@ def messages_by_day_of_week(df, filtered_senders):
 
     messages_by_weekday = messages_by_weekday.reindex(weekday_order)
 
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(10, 6))
     messages_by_weekday.plot(kind='bar', color='purple', title='Messages Sent by Each Day of Week')
     plt.xlabel('Day of Week')
     plt.ylabel('Number of Messages')
@@ -293,7 +293,7 @@ def plot_sentiment_transition_matrix(df):
     transition_matrix = pd.crosstab(df["Prev_Sentiment"], df["Sentiment"], normalize="index")
 
     # Plot heatmap
-    plt.figure(figsize=(8, 6))
+    plt.figure(figsize=(6, 5))
     sns.heatmap(
         transition_matrix,
         annot=True,
@@ -340,8 +340,11 @@ def plot_sentiment_pie_chart(df):
     # Display the chart in Streamlit
     st.plotly_chart(fig)
 
+url = "https://www.ahsenwaheed.com"
+st.caption("Made by [me](%s) :)" % url)
+
 def main():
-    st.title("WhatsApp Chat Text Analytics")
+    st.title("WhatsApp Chat Text Analytics 📊")
     st.divider()
 
     with st.expander("How to Download Whatsapp Chat"):
@@ -357,6 +360,15 @@ def main():
         st.write("See WhatsApp documentation [here](https://faq.whatsapp.com/1180414079177245/) for more.") 
 
     uploaded_file = st.file_uploader("Upload chat file (txt)", type=["txt"])
+    st.markdown("""
+        <p style="font-size: 12px;">
+        <strong>Disclaimer:</strong><br>
+        The owner/creator of this application does <strong>not</strong> save any uploaded files. 
+        Files are uploaded exclusively through the <code>st.file_uploader</code> function and are processed solely within the app. 
+        Once the session ends, the files are discarded. 
+        <strong>No data is stored or retained beyond the session</strong>.
+        </p>
+    """, unsafe_allow_html=True)
 
 
 
@@ -424,7 +436,7 @@ def main():
                 st.subheader("Total Messages Per Hour")
                 total_messages_per_hour(df, selected_senders)
             with col7:
-                st.subheader("Messages Sent by Each Day of the Week")
+                st.subheader("Messages Sent by Days")
                 messages_by_day_of_week(df, selected_senders)
 
             # Row 3: Top Words Distribution
