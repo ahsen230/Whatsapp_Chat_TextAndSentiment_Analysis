@@ -5,6 +5,5 @@ emoji
 seaborn
 transformers
 tensorflow
-bitsandbytes
 torch
-accelerate
+plotly

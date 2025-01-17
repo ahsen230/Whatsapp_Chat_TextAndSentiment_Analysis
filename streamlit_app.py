@@ -10,6 +10,35 @@ from transformers import pipeline
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
 import torch.nn.functional as F
 import numpy as np
+import plotly.graph_objects as go
+
+
+@st.cache_data
+def run_sentiment_analysis(df, model_name="cardiffnlp/twitter-roberta-base-sentiment"):
+    """Perform sentiment analysis on the chat data and cache the results."""
+
+    # Initialize tokenizer and model
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForSequenceClassification.from_pretrained(model_name)
+    classifier = pipeline("sentiment-analysis", model=model, tokenizer=tokenizer)
+
+    # Perform sentiment analysis
+    sentiments = []
+    for message in df["Message"]:
+        if isinstance(message, str):
+            # Tokenize and pass through the model
+            inputs = tokenizer(message, return_tensors="pt", truncation=True, padding=True, max_length=512)
+            outputs = model(**inputs)
+            scores = F.softmax(outputs.logits, dim=1).detach().numpy()[0]
+            sentiment = np.argmax(scores)
+            sentiments.append(["Negative", "Neutral", "Positive"][sentiment])
+        else:
+            sentiments.append("Neutral")
+
+    # Add sentiment column to DataFrame
+    df["Sentiment"] = sentiments
+    return df
+
 
 def process_chat(chat_text):
     """Process WhatsApp chat text into a structured DataFrame."""
@@ -204,27 +233,118 @@ def word_usage_visual(df):
     plt.ylabel("User")
     st.pyplot(plt)
 
+def plot_sentiment_distribution_per_user(df):
+    """Plot Horizontal Bar Chart for Sentiment Distribution Per User."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    # Group and reshape data
+    sentiment_user = df.groupby(["Sender", "Sentiment"]).size().unstack(fill_value=0)
+
+    # Plotting
+    fig, ax = plt.subplots(figsize=(12, 6))
+    width = 0.2  # Width of each bar
+    y_positions = np.arange(len(sentiment_user.index))  # Y positions for users
+
+    # Create bars for each sentiment
+    ax.barh(y_positions - width, sentiment_user["Negative"], height=width, color="red", label="Negative")
+    ax.barh(y_positions, sentiment_user["Neutral"], height=width, color="gray", label="Neutral")
+    ax.barh(y_positions + width, sentiment_user["Positive"], height=width, color="green", label="Positive")
+
+    # Add data labels
+    for i, user in enumerate(sentiment_user.index):
+        ax.text(sentiment_user["Negative"].iloc[i], y_positions[i] - width, str(sentiment_user["Negative"].iloc[i]),
+                va='center', ha='left', fontsize=9)
+        ax.text(sentiment_user["Neutral"].iloc[i], y_positions[i], str(sentiment_user["Neutral"].iloc[i]),
+                va='center', ha='left', fontsize=9)
+        ax.text(sentiment_user["Positive"].iloc[i], y_positions[i] + width, str(sentiment_user["Positive"].iloc[i]),
+                va='center', ha='left', fontsize=9)
+
+    # Customize chart appearance
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(sentiment_user.index)
+    ax.set_xlabel("Number of Messages")
+    ax.set_ylabel("Users")
+    ax.set_title("Sentiment Distribution Per User")
+    ax.legend(title="Sentiment")
+    plt.tight_layout()
+
+    # Display the chart in Streamlit
+    st.pyplot(fig)
+
+def display_top_sentiments(df, top_n=5):
+    """Display the most positive and negative messages."""
+    positive_messages = df[df["Sentiment"] == "Positive"].nlargest(top_n, "Sentiment_Num")
+    negative_messages = df[df["Sentiment"] == "Negative"].nsmallest(top_n, "Sentiment_Num")
+
+    st.subheader("Top Positive Messages")
+    st.write(positive_messages[["Timestamp", "Sender", "Message"]])
+
+    st.subheader("Top Negative Messages")
+    st.write(negative_messages[["Timestamp", "Sender", "Message"]])
+
+
+def plot_sentiment_transition_matrix(df):
+    """Heatmap for Sentiment Transition Matrix."""
+    # Create lagged sentiment column
+    df["Prev_Sentiment"] = df["Sentiment"].shift(1)
+
+    # Create a transition matrix
+    transition_matrix = pd.crosstab(df["Prev_Sentiment"], df["Sentiment"], normalize="index")
+
+    # Plot heatmap
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(
+        transition_matrix,
+        annot=True,
+        fmt=".2%",
+        cmap="Blues",
+        cbar_kws={"label": "Transition Probability"}
+    )
+    plt.title("Sentiment Transition Matrix")
+    plt.xlabel("Current Sentiment")
+    plt.ylabel("Previous Sentiment")
+    st.pyplot(plt)
+
+
+def plot_sentiment_pie_chart(df):
+    """Generate a Plotly pie chart for the overall sentiment distribution."""
+    
+    # Count the sentiment distribution
+    sentiment_counts = df["Sentiment"].value_counts()
+    
+    # Prepare the labels with both count and percentage
+    labels = sentiment_counts.index
+    counts = sentiment_counts.values
+    percentages = (counts / counts.sum()) * 100
+    label_text = [f"{label}: {count} ({percent:.1f}%)" for label, count, percent in zip(labels, counts, percentages)]
+    
+    # Create a Plotly pie chart
+    fig = go.Figure(data=[go.Pie(
+        labels=labels,  # Sentiment types (Positive, Neutral, Negative)
+        values=counts,  # Counts of each sentiment
+        hole=0.3,  # Make it a donut chart (optional)
+        hoverinfo="label+percent",  # Show both label and percentage on hover
+        textinfo="text",  # Display the custom text (count and percentage)
+        text=label_text,  # Custom text for each slice
+        marker=dict(colors=["green", "gray", "red"])  # Colors for Positive, Neutral, Negative
+    )])
+    
+    # Update layout for aesthetics
+    fig.update_layout(
+        title="Overall Sentiment Distribution",
+        title_x=0.5,  # Center the title
+        title_font=dict(size=20),
+    )
+    
+    # Display the chart in Streamlit
+    st.plotly_chart(fig)
 
 def main():
     st.title("WhatsApp Chat Text Analytics")
     st.divider()
 
-    if "show_instructions" not in st.session_state:
-        st.session_state.show_instructions = False
-
-    if st.button("How to Download WhatsApp Chat"):
-        # Toggle the state
-        st.session_state.show_instructions = not st.session_state.show_instructions
-
-    # Dynamic message based on the button's state
-    if st.session_state.show_instructions:
-        st.caption("Click the button again to minimize the instructions.")  # Display message when instructions are visible
-    else:
-         st.caption("") # Display message when instructions are hidden
-
-    # Show instructions if the button is toggled ON
-    if st.session_state.show_instructions:
-        st.subheader("Steps to download WhatsApp chat")
+    with st.expander("How to Download Whatsapp Chat"):
         st.image("https://mobi.easeus.com/images/en/screenshot/mobimover/export-whatsapp-chat-history.jpg")
         st.markdown("""
             - Open an individual or group chat.
@@ -234,8 +354,7 @@ def main():
                     - **Attach Media** (to include media files).
                     - **Without Media** (to exclude media files) **Use this method here**
         """)
-        st.write("See WhatsApp documentation [here](https://faq.whatsapp.com/1180414079177245/) for more.")
-    st.divider()
+        st.write("See WhatsApp documentation [here](https://faq.whatsapp.com/1180414079177245/) for more.") 
 
     uploaded_file = st.file_uploader("Upload chat file (txt)", type=["txt"])
 
@@ -291,7 +410,6 @@ def main():
             # Dashboard Layout
 
             # Row 1: Total Messages per Day and Total Messages by Person
-            st.subheader("Message Trends")
             col4, col5 = st.columns(2)
             with col4:
                 st.subheader("Total Messages Sent Each Day")
@@ -301,7 +419,6 @@ def main():
                 total_messages_by_person(df, selected_senders)
 
             # Row 2: Total Messages per Hour and Messages by Day of the Week
-            st.subheader("Time-Based Message Trends")
             col6, col7 = st.columns(2)
             with col6:
                 st.subheader("Total Messages Per Hour")
@@ -311,7 +428,6 @@ def main():
                 messages_by_day_of_week(df, selected_senders)
 
             # Row 3: Top Words Distribution
-            st.subheader("Word Usage Analysis")
             st.subheader("Top 5 Most Used Words Distribution per Person")
             top_words_distribution(df, selected_senders)
 
@@ -326,66 +442,42 @@ def main():
             if df.empty:
                 st.warning("Please upload a chat file to perform sentiment analysis.")
             else:
-                # Install and import required libraries
-                from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+                df_with_sentiment = run_sentiment_analysis(df)
 
-                # Model name for Twitter RoBERTa sentiment analysis
-                model_name = "cardiffnlp/twitter-roberta-base-sentiment"
-                tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-                # Load the model with 8-bit quantization (reduces memory usage)
-                model = AutoModelForSequenceClassification.from_pretrained(
-                    model_name # Load model in 8-bit precision to save memory
-                )
+            plot_sentiment_pie_chart(df_with_sentiment)
 
-                # Initialize the sentiment analysis pipeline
-                classifier = pipeline("sentiment-analysis", model=model, tokenizer=tokenizer)
+            st.write(df_with_sentiment)
 
-                # Perform sentiment analysis for each message
-                st.info("Analyzing sentiments... This may take a few moments.")
-                sentiments = []
+            sentiment_map = {"Positive": 1, "Neutral": 0, "Negative": -1}
+            df_with_sentiment["Sentiment_Num"] = df_with_sentiment["Sentiment"].map(sentiment_map)
+            df_with_sentiment["Sentiment_Num"] = pd.to_numeric(df_with_sentiment["Sentiment_Num"], errors="coerce").fillna(0)
 
-        for message in df["Message"]:
-            if isinstance(message, str):
-                # Tokenize the message with truncation to fit within the model's max length
-                inputs = tokenizer(message, return_tensors="pt", truncation=True, padding=True, max_length=512)
+            st.subheader("Sentiment Distribution per user")
+            plot_sentiment_distribution_per_user(df_with_sentiment)
+            st.divider()
+            # Most positive and most negative users
+            positive_counts = df_with_sentiment[df_with_sentiment["Sentiment"] == "Positive"]["Sender"].value_counts()
+            negative_counts = df_with_sentiment[df_with_sentiment["Sentiment"] == "Negative"]["Sender"].value_counts()
+            neutral_counts = df_with_sentiment[df_with_sentiment["Sentiment"] == "Neutral"]["Sender"].value_counts()
+            most_positive_user = positive_counts.idxmax() if not positive_counts.empty else "No Data"
+            most_negative_user = negative_counts.idxmax() if not negative_counts.empty else "No Data"
+            most_neutral_user = neutral_counts.idxmax() if not neutral_counts.empty else "No Data"
 
-                # Get sentiment prediction using the model's outputs
-                outputs = model(**inputs)
-                scores = F.softmax(outputs.logits, dim=1).detach().numpy()[0]  # Convert logits to probabilities
-                sentiment = np.argmax(scores)  # Get sentiment class index (0 = Negative, 1 = Neutral, 2 = Positive)
-                sentiments.append(["Negative", "Neutral", "Positive"][sentiment])
-            else:
-                sentiments.append("Neutral")
+            col3, col4, col5 = st.columns(3)
+            with col3:
+                st.metric("Most Positive User 😊", most_positive_user, border=True)
+            with col4:
+                st.metric("Most Negative User 😤", most_negative_user, border=True)
+            with col5:
+                st.metric("Most Neutral User 😐", most_neutral_user, border=True)
 
-        # Add sentiment results to the DataFrame
-        df["Sentiment"] = sentiments
 
-        # Show sentiment distribution
-        st.subheader("Sentiment Distribution")
-        sentiment_counts = df["Sentiment"].value_counts()
-        st.bar_chart(sentiment_counts)
+            st.subheader("Key Moments in Chat" , divider="gray")
+            display_top_sentiments(df_with_sentiment, top_n=5)
 
-        # Sentiment distribution per user
-        st.subheader("Sentiment Distribution Per User")
-        sentiment_user = df.groupby(["Sender", "Sentiment"]).size().unstack(fill_value=0)
-        st.write(sentiment_user)
+            st.subheader("Sentiment Transition Matrix")
+            plot_sentiment_transition_matrix(df_with_sentiment)
 
-        # Most positive and most negative users
-        st.subheader("Most Positive and Negative Users")
-        positive_counts = df[df["Sentiment"] == "Positive"]["Sender"].value_counts()
-        negative_counts = df[df["Sentiment"] == "Negative"]["Sender"].value_counts()
-        most_positive_user = positive_counts.idxmax() if not positive_counts.empty else "No Data"
-        most_negative_user = negative_counts.idxmax() if not negative_counts.empty else "No Data"
-
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Most Positive User", most_positive_user)
-        with col2:
-            st.metric("Most Negative User", most_negative_user)
-
-        # Optionally display the DataFrame with sentiment
-        st.subheader("Chat Messages with Sentiment")
-        st.write(df[["Timestamp", "Sender", "Message", "Sentiment"]])
 if __name__ == "__main__":
     main()
