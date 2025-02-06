@@ -283,30 +283,6 @@ def display_top_sentiments(df, top_n=5):
     st.subheader("Top Negative Messages")
     st.write(negative_messages[["Timestamp", "Sender", "Message"]])
 
-
-def plot_sentiment_transition_matrix(df):
-    """Heatmap for Sentiment Transition Matrix."""
-    # Create lagged sentiment column
-    df["Prev_Sentiment"] = df["Sentiment"].shift(1)
-
-    # Create a transition matrix
-    transition_matrix = pd.crosstab(df["Prev_Sentiment"], df["Sentiment"], normalize="index")
-
-    # Plot heatmap
-    plt.figure(figsize=(6, 5))
-    sns.heatmap(
-        transition_matrix,
-        annot=True,
-        fmt=".2%",
-        cmap="Blues",
-        cbar_kws={"label": "Transition Probability"}
-    )
-    plt.title("Sentiment Transition Matrix")
-    plt.xlabel("Current Sentiment")
-    plt.ylabel("Previous Sentiment")
-    st.pyplot(plt)
-
-
 def plot_sentiment_pie_chart(df):
     """Generate a Plotly pie chart for the overall sentiment distribution."""
     
@@ -488,8 +464,6 @@ def main():
             st.subheader("Key Moments in Chat" , divider="gray")
             display_top_sentiments(df_with_sentiment, top_n=5)
 
-            st.subheader("Sentiment Transition Matrix")
-            plot_sentiment_transition_matrix(df_with_sentiment)
 
 if __name__ == "__main__":
     main()
