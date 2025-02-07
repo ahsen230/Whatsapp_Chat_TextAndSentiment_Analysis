@@ -11,7 +11,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipe
 import torch.nn.functional as F
 import numpy as np
 import plotly.graph_objects as go
-
+import math
 
 @st.cache_data
 def run_sentiment_analysis(df, model_name="cardiffnlp/twitter-roberta-base-sentiment"):
@@ -39,24 +39,59 @@ def run_sentiment_analysis(df, model_name="cardiffnlp/twitter-roberta-base-senti
     df["Sentiment"] = sentiments
     return df
 
-
+ 
 def process_chat(chat_text):
-    """Process WhatsApp chat text into a structured DataFrame."""
-    # Updated Regex for WhatsApp messages
-    pattern = r"(\d{1,2}/\d{1,2}/\d{2,4}, \d{1,2}:\d{2}\u202f[APap][Mm]) - ([^:]+): (.+)"
+    """
+    Process WhatsApp chat text into a structured DataFrame.
+    Handles multiple timestamp formats:
+    - "MM/DD/YY, HH:MM PM - Sender: Message"
+    - "[MM/DD/YY, HH:MM:SS PM] Sender: Message"
+    
+    Args:
+        chat_text (str): The raw chat text to process
+        
+    Returns:
+        pandas.DataFrame: DataFrame with columns ["Timestamp", "Sender", "Message"]
+    """
+    # Fixed pattern with proper escaping
+    pattern = r'\[?(\d{1,2}/\d{1,2}/\d{2,4},\s+\d{1,2}:\d{2}(?::\d{2})?\s*[APap][Mm])\]?\s*-?\s*([^:]+):\s*(.+)'
+    
     messages = re.findall(pattern, chat_text)
-
+    
     # Create DataFrame if matches are found
     if messages:
         df = pd.DataFrame(messages, columns=["Timestamp", "Sender", "Message"])
-        # Convert Timestamp to datetime
-        df["Timestamp"] = pd.to_datetime(df["Timestamp"], format="%m/%d/%y, %I:%M %p", errors="coerce")
-        df = df[df["Message"] != "<Media omitted>"]
+        
+        # Clean sender names (remove extra whitespace)
+        df["Sender"] = df["Sender"].str.strip()
+        
+        # Clean timestamp strings: remove any square brackets
+        df["Timestamp"] = df["Timestamp"].str.replace(r'[\[\]]', '', regex=True).str.strip()
+        
+        # Try multiple timestamp formats
+        for fmt in [
+            "%m/%d/%y, %I:%M:%S %p",  # Try the format with seconds first
+            "%m/%d/%y, %I:%M %p",      # Then try without seconds
+            "%m/%d/%Y, %I:%M:%S %p",   # 4-digit year with seconds
+            "%m/%d/%Y, %I:%M %p"       # 4-digit year without seconds
+        ]:
+            try:
+                # Convert Timestamp to datetime
+                df["Timestamp"] = pd.to_datetime(df["Timestamp"], format=fmt)
+                break  # If successful, break the loop
+            except ValueError:
+                continue
+                
+        # Filter out media messages
+        df = df[~df["Message"].str.contains("media omitted|image omitted", case=False, na=False)]
+        df = df[~df["Sender"].str.contains("joined using this group's invite|~|messages and calls are end-to-end encrypted", case=False, na=False)]
+
+        
+        return df
     else:
         # Return an empty DataFrame if no matches
-        df = pd.DataFrame(columns=["Timestamp", "Sender", "Message"])
-    
-    return df
+        return pd.DataFrame(columns=["Timestamp", "Sender", "Message"])
+
 
 def calculate_metrics(df):
     """Calculate key metrics for the chat."""
@@ -74,12 +109,20 @@ def total_messages_per_day(df, filtered_senders):
     """Plot total messages sent each day as a continuous line graph."""
     df_filtered = df[df['Sender'].isin(filtered_senders)]
     messages_per_day = df_filtered.groupby(df_filtered["Timestamp"].dt.date).size()
-
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(10, 8))
     messages_per_day.plot(kind='line', title='Total Messages Sent Each Day')
-    plt.xlabel('Date')
-    plt.ylabel('Number of Messages')
-    plt.grid(True, linestyle='--', alpha=0.6)  # Optional: Add light grid for readability
+    
+    # Reduce x-axis text size
+    plt.xticks(fontsize=8, rotation=45)  # Smaller font size and rotated for better fit
+    
+    # Other formatting
+    plt.xlabel('Date', fontsize=12)
+    plt.ylabel('Number of Messages', fontsize=10)
+    plt.grid(True, linestyle='--', alpha=0.6)
+    
+    # Adjust layout to prevent date labels from being cut off
+    plt.tight_layout()
+    
     st.pyplot(plt)
 
 
@@ -88,111 +131,250 @@ def total_messages_by_person(df, filtered_senders):
     df_filtered = df[df['Sender'].isin(filtered_senders)]
     messages_by_sender = df_filtered['Sender'].value_counts()
 
-    plt.figure(figsize=(10, 7))
-    messages_by_sender.plot(kind='barh', color='skyblue', title='Total Messages Sent by Each Person')
+    plt.figure(figsize=(10, 8))
+    ax = messages_by_sender.plot(kind='barh', color='skyblue', title='Total Messages Sent by Each Person')
+    
+    # Add data labels
+    for i, v in enumerate(messages_by_sender):
+        ax.text(v + 1, i, str(v), 
+                va='center',           # Vertical alignment
+                fontweight='bold',     # Make labels bold
+                fontsize=10)           # Set font size
+    
     plt.xlabel('Number of Messages')
     plt.ylabel('Sender')
     plt.gca().invert_yaxis()
+    
+    # Add some padding to the right to ensure labels are visible
+    plt.margins(x=0.1)
+    
+    # Adjust layout to prevent labels from being cut off
+    plt.tight_layout()
+    
     st.pyplot(plt)
 
 def total_messages_per_hour(df, filtered_senders):
     """Plot total messages sent per hour."""
+def total_messages_per_hour(df, filtered_senders):
+    """
+    Plot total messages sent per hour with enhanced visualization and time period legend.
+    Only shows hours that have messages.
+    
+    Args:
+        df (pandas.DataFrame): DataFrame containing message data
+        filtered_senders (list): List of senders to include in the analysis
+    """
+    def get_time_period_color(hour):
+        """Return color and period name based on hour."""
+        if 5 <= hour <= 11:
+            return '#FFA07A', 'Morning (5:00-11:59)'    # Light salmon
+        elif 12 <= hour <= 16:
+            return '#98FB98', 'Afternoon (12:00-16:59)'  # Pale green
+        elif 17 <= hour <= 21:
+            return '#87CEEB', 'Evening (17:00-21:59)'    # Sky blue
+        else:
+            return '#DDA0DD', 'Night (22:00-4:59)'       # Plum
+    
     df_filtered = df[df['Sender'].isin(filtered_senders)]
     messages_per_hour = df_filtered.groupby(df_filtered["Timestamp"].dt.hour).size()
-
-    plt.figure(figsize=(10, 7))
-    messages_per_hour.plot(kind='bar', color='orange', title='Total Messages Sent by Each Hour')
-    plt.xlabel('Hour')
-    plt.ylabel('Number of Messages')
-    plt.xticks(range(0, 24))
+    
+    # Filter out hours with zero messages
+    messages_per_hour = messages_per_hour[messages_per_hour > 0]
+    
+    plt.figure(figsize=(10, 8))
+    
+    # Create bars with different colors based on time period
+    bars = plt.bar(range(len(messages_per_hour)), 
+                  messages_per_hour,
+                  alpha=0.7,
+                  width=0.8)
+    
+    # Color each bar based on its time period and collect legend elements
+    legend_elements = {}
+    for i, (hour, count) in enumerate(messages_per_hour.items()):
+        color, period = get_time_period_color(hour)
+        bars[i].set_color(color)
+        legend_elements[period] = color
+        
+        # Add data labels on top of each bar
+        plt.text(i, count + 0.5, str(count),
+                ha='center',
+                va='bottom',
+                fontsize=9,
+                fontweight='bold')
+    
+    # Add legend
+    legend_patches = [plt.Rectangle((0,0),1,1, fc=color, alpha=0.7) 
+                     for color in legend_elements.values()]
+    plt.legend(legend_patches, 
+              legend_elements.keys(),
+              loc='upper right',
+              title='Time Periods',
+              fontsize=8,
+              title_fontsize=9)
+    
+    # Customize the plot
+    plt.title('Message Activity by Hour of Day', pad=20, fontsize=12, fontweight='bold')
+    plt.xlabel('Hour of Day (24-hour format)', fontsize=10)
+    plt.ylabel('Number of Messages', fontsize=10)
+    
+    # Format x-axis ticks using only hours that have messages
+    plt.xticks(range(len(messages_per_hour)), 
+               [f'{hour:02d}:00' for hour in messages_per_hour.index],
+               rotation=45)
+    
+    # Add grid for better readability
+    plt.grid(axis='y', linestyle='--', alpha=0.3)
+    
+    # Remove top and right spines
+    ax = plt.gca()
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
+    # Add some padding
+    plt.margins(x=0.01)
+    
+    # Adjust layout to prevent label cutoff
+    plt.tight_layout()
+    
     st.pyplot(plt)
 
 def messages_by_day_of_week(df, filtered_senders):
     """Plot messages sent by each day of the week."""
     df_filtered = df[df['Sender'].isin(filtered_senders)]
     messages_by_weekday = df_filtered.groupby(df_filtered["Timestamp"].dt.day_name()).size()
+    
+    # Standard day order
     weekday_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-
-    messages_by_weekday = messages_by_weekday.reindex(weekday_order)
-
-    plt.figure(figsize=(10, 6))
-    messages_by_weekday.plot(kind='bar', color='purple', title='Messages Sent by Each Day of Week')
-    plt.xlabel('Day of Week')
-    plt.ylabel('Number of Messages')
-    st.pyplot(plt)
-
-def most_used_words(df, filtered_senders):
-    """Show most used words per person as a horizontal bar plot."""
-    df_filtered = df[df['Sender'].isin(filtered_senders)]
-    all_messages = " ".join(df_filtered["Message"].dropna().str.lower())
-    words = re.findall(r'\b\w+\b', all_messages)  # Extract words
-    common_words = Counter(words).most_common(10)
-
-    # Convert to DataFrame for plotting
-    words_df = pd.DataFrame(common_words, columns=["Word", "Count"])
-
-    # Plot the horizontal bar chart
-    plt.figure(figsize=(10, 5))
-    words_df.set_index("Word")["Count"].sort_values(ascending=False).plot(
-        kind='barh', color='orange', title='Top 10 Most Used Words'
-    )
-    plt.xlabel('Frequency')
-    plt.ylabel('Words')
-    plt.gca().invert_yaxis()  # Invert y-axis to show the most frequent word at the top
+    
+    # Reindex and remove days with zero messages
+    messages_by_weekday = messages_by_weekday.reindex(weekday_order).fillna(0)
+    messages_by_weekday = messages_by_weekday[messages_by_weekday > 0]
+    
+    plt.figure(figsize=(10, 8))
+    
+    # Color mapping for weekdays/weekend
+    def get_day_color(day):
+        return '#87CEFA' if day in ['Saturday', 'Sunday'] else '#9370DB'
+    
+    # Create bars with different colors for weekdays/weekend
+    bars = plt.bar(messages_by_weekday.index, 
+                   messages_by_weekday.values,
+                   color=[get_day_color(day) for day in messages_by_weekday.index],
+                   alpha=0.7,
+                   width=0.8)
+    
+    # Add data labels on top of each bar
+    for i, v in enumerate(messages_by_weekday):
+        plt.text(i, v + 0.5, str(int(v)),
+                 ha='center', 
+                 va='bottom',
+                 fontsize=9,
+                 fontweight='bold')
+    
+    # Customize the plot
+    plt.title('Messages Sent by Day of Week', pad=20, fontsize=12, fontweight='bold')
+    plt.xlabel('Day of Week', fontsize=10)
+    plt.ylabel('Number of Messages', fontsize=10)
+    
+    # Add legend
+    weekend_patch = plt.Rectangle((0,0),1,1, fc='#87CEFA', alpha=0.7, label='Weekend')
+    weekday_patch = plt.Rectangle((0,0),1,1, fc='#9370DB', alpha=0.7, label='Weekday')
+    plt.legend(handles=[weekday_patch, weekend_patch], 
+               loc='upper right',
+               title='Day Type',
+               fontsize=8,
+               title_fontsize=9)
+    
+    # Add grid for better readability
+    plt.grid(axis='y', linestyle='--', alpha=0.3)
+    
+    # Remove top and right spines
+    ax = plt.gca()
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
+    plt.tight_layout()
     st.pyplot(plt)
 
 
 def top_words_distribution(df, filtered_senders):
-    """Facet-style horizontal bar plots for the top 10 most used words per sender with data labels."""
-    # Filter data for the selected senders
-    df_filtered = df[df['Sender'].isin(filtered_senders)]
-
-    # Create a DataFrame for storing all senders' word counts
-    data = []
-
-    # Extract the top 10 most used words for each sender
-    for sender in filtered_senders:
-        sender_df = df_filtered[df_filtered["Sender"] == sender]
-        all_words = " ".join(sender_df["Message"].dropna().str.lower())
-        words = re.findall(r'\b\w+\b', all_words)  # Extract words
-        common_words = Counter(words).most_common(10)  # Top 10 words
-        for word, count in common_words:
-            data.append({"Sender": sender, "Word": word, "Count": count})
-
-    # Create a new DataFrame for visualization
-    words_df = pd.DataFrame(data)
-
-    if words_df.empty:
-        st.write("No data available for the selected users.")
-        return
-
-    # Set the style and plot with seaborn
-    sns.set_theme(style="whitegrid")
-    g = sns.catplot(
-        data=words_df,
-        x="Count",
-        y="Word",
-        hue="Sender",
-        col="Sender",
-        kind="bar",
-        col_wrap=4,  # Adjust this for layout (e.g., number of columns per row)
-        height=4,
-        sharey=False,  # Allow different y-scales for each sender
-        palette="Set2"  # Color palette for unique sender colors
+    """
+    Create dynamic grid of top words plots based on number of senders.
+    
+    Args:
+        df (pandas.DataFrame): DataFrame containing message data
+        filtered_senders (list): List of senders to analyze
+    """
+    # Determine number of columns dynamically
+    if len(filtered_senders) > 6:
+        ncols = 4
+    elif len(filtered_senders) >= 5:
+        ncols = 3
+    elif len(filtered_senders) >= 3:
+        ncols = 2
+    else:
+        ncols = 2
+    
+    # Calculate number of rows
+    nrows = math.ceil(len(filtered_senders) / ncols)
+    
+    # Create figure with calculated subplot grid
+    fig, axes = plt.subplots(
+        nrows=nrows, 
+        ncols=ncols, 
+        figsize=(4*ncols, 4*nrows), 
+        squeeze=False  # Ensure axes is always 2D array
     )
-
-    # Add data labels to each bar
-    for ax in g.axes.flat:
-        for container in ax.containers:
-            ax.bar_label(container, fmt="%.0f", label_type="edge", fontsize=10, padding=3)
-
-    # Customize plot appearance
-    g.set_titles("{col_name}")  # Set titles for each sender
-    g.set_axis_labels("Frequency", "Words")  # Axis labels
-    g.fig.subplots_adjust(top=0.9)  # Adjust subplot spacing
-    g.fig.suptitle("Most Often Used Words by Each Sender")  # Overall title
-
-    st.pyplot(g.fig)
+    
+    # Flatten axes for easier iteration
+    axes_flat = axes.flatten()
+    
+    # Color palette
+    colors = plt.cm.Set3(np.linspace(0, 1, len(filtered_senders)))
+    
+    # Process and plot for each sender
+    for i, sender in enumerate(filtered_senders):
+        # Filter and process sender's messages
+        sender_df = df[df["Sender"] == sender]
+        all_words = " ".join(sender_df["Message"].dropna().str.lower())
+        
+        words = re.findall(r'\b\w+\b', all_words)
+        
+        common_words = Counter(words).most_common(10)
+        
+        # Create subplot
+        ax = axes_flat[i]
+        
+        # Sort words by count for horizontal bar plot
+        words_series = pd.Series(dict(common_words)).sort_values(ascending=True)
+        
+        # Plot horizontal bars
+        bars = ax.barh(words_series.index, words_series.values, color=colors[i], alpha=0.7)
+        
+        # Add labels and styling
+        ax.set_title(f"{sender}", fontsize=8, fontweight='bold')
+        
+        # Add count labels
+        for bar in bars:
+            width = bar.get_width()
+            ax.text(width, bar.get_y() + bar.get_height()/2, f'{int(width)}', 
+                    ha='left', va='center', fontweight='bold', fontsize=6)
+        
+        # Style improvements
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+    
+    # Hide any unused subplots
+    for j in range(i+1, len(axes_flat)):
+        axes_flat[j].axis('off')
+    
+    # Overall figure styling
+    plt.tight_layout()
+    fig.suptitle('Top Words by Sender', fontsize=12, fontweight='bold')
+    plt.subplots_adjust(top=0.9)  # Make room for overall title
+    
+    st.pyplot(fig)
 
 
 def word_usage_visual(df):
@@ -227,10 +409,17 @@ def word_usage_visual(df):
 
     # Plot the results
     plt.figure(figsize=(10, 6))
-    sns.barplot(data=filtered_df, x="Count", y="Sender", palette="Set3", orient="h")
+    ax = sns.barplot(data=filtered_df, x="Count", y="Sender", palette="Set3", orient="h")
     plt.title(f"Usage of the Word '{search_word}' by Each User")
     plt.xlabel("Count")
-    plt.ylabel("User")
+    plt.ylabel("Sender")
+
+    # Add data labels
+    for p in ax.patches:
+        ax.annotate(f'{int(p.get_width())}', (p.get_width(), p.get_y() + p.get_height() / 2),
+                    ha='left', va='center', xytext=(5, 0), textcoords='offset points',
+                    fontweight='bold')
+
     st.pyplot(plt)
 
 def plot_sentiment_distribution_per_user(df):
@@ -264,8 +453,8 @@ def plot_sentiment_distribution_per_user(df):
     ax.set_yticks(y_positions)
     ax.set_yticklabels(sentiment_user.index)
     ax.set_xlabel("Number of Messages")
-    ax.set_ylabel("Users")
-    ax.set_title("Sentiment Distribution Per User")
+    ax.set_ylabel("Senders")
+    ax.set_title("Sentiment Distribution Per Sender")
     ax.legend(title="Sentiment")
     plt.tight_layout()
 
